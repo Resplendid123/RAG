@@ -1,0 +1,4 @@
+.idea
+*_test.go
+docs
+config.yaml
