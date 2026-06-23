@@ -1,4 +1,3 @@
-// cmd/main.go
 package main
 
 import (
@@ -10,19 +9,31 @@ import (
 	"github.com/spf13/cobra"
 	"gorm.io/gorm"
 
-	ragpkg "rag/rag"
-
 	"rag/internal"
+
+	// 注册各章节的 lesson(init() 副作用)。
+	_ "rag/internal/ch01"
+	_ "rag/internal/ch02"
+	_ "rag/internal/ch03"
+	_ "rag/internal/ch04"
+	_ "rag/internal/ch05"
+	_ "rag/internal/ch06"
+	_ "rag/internal/ch07"
+	_ "rag/internal/ch08"
+	_ "rag/internal/ch09"
+	_ "rag/internal/ch10"
+
+	"rag/infrastructure"
 )
 
 func main() {
-	cfg, err := internal.Load()
+	cfg, err := infrastructure.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
-	gormDB, err := internal.InitDB(cfg.Database)
+	gormDB, err := infrastructure.InitDB(cfg.Database)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -34,18 +45,19 @@ func main() {
 	}
 	defer sqlDB.Close()
 
-	llm, err := internal.NewLLM(cfg.LLM)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	emb, err := internal.NewEmbedder(cfg.Embedding)
+	llm, err := infrastructure.NewLLM(cfg.LLM)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
-	deps := &ragpkg.Deps{
+	emb, err := infrastructure.NewEmbedder(cfg.Embedding)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	deps := &internal.Deps{
 		DB:       gormDB,
 		LLM:      llm,
 		Embedder: emb,
@@ -59,7 +71,7 @@ func main() {
 		Long:  "Run any registered lesson with `rag <lesson-name> [flags]`.",
 	}
 	root.AddCommand(migrateCmd(gormDB))
-	for _, l := range ragpkg.All() {
+	for _, l := range internal.All() {
 		root.AddCommand(lessonCmd(l, deps))
 	}
 	if err := root.Execute(); err != nil {
@@ -68,13 +80,13 @@ func main() {
 }
 
 // lessonCmd 把 Lesson 包成 cobra 子命令：start transaction → set search_path → call Run.
-func lessonCmd(l ragpkg.Lesson, base *ragpkg.Deps) *cobra.Command {
+func lessonCmd(l internal.Lesson, base *internal.Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:                l.Name,
 		Short:              l.Description,
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			schema, err := internal.SchemaName(l.Name)
+			schema, err := infrastructure.SchemaName(l.Name)
 			if err != nil {
 				return err
 			}
@@ -101,13 +113,13 @@ func migrateCmd(gormDB *gorm.DB) *cobra.Command {
 		Short: "Run DDL for a lesson (or --all)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			targets := ragpkg.All()
+			targets := internal.All()
 			if !all {
 				if len(args) == 0 {
 					return fmt.Errorf("specify a lesson name or pass --all")
 				}
 				name := args[0]
-				filtered := make([]ragpkg.Lesson, 0, 1)
+				filtered := make([]internal.Lesson, 0, 1)
 				for _, l := range targets {
 					if l.Name == name {
 						filtered = append(filtered, l)
@@ -124,7 +136,7 @@ func migrateCmd(gormDB *gorm.DB) *cobra.Command {
 					fmt.Printf("- %s: no Migrate func, skipping\n", l.Name)
 					continue
 				}
-				schema, err := internal.SchemaName(l.Name)
+				schema, err := infrastructure.SchemaName(l.Name)
 				if err != nil {
 					return err
 				}

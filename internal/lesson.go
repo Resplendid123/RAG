@@ -1,4 +1,4 @@
-package rag
+package internal
 
 import (
 	"context"
@@ -6,14 +6,14 @@ import (
 
 	"gorm.io/gorm"
 
-	"rag/internal"
+	"rag/infrastructure"
 )
 
 type Deps struct {
 	DB       *gorm.DB
-	LLM      internal.LLM
-	Embedder internal.Embedder
-	Cfg      *internal.Config
+	LLM      infrastructure.LLM
+	Embedder infrastructure.Embedder
+	Cfg      *infrastructure.Config
 	Logger   *slog.Logger
 }
 
