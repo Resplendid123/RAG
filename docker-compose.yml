@@ -6,13 +6,13 @@ volumes:
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: paradedb/paradedb:pg18
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql
     networks: [rag]
     ports: ["5432:5432"]
     healthcheck:
