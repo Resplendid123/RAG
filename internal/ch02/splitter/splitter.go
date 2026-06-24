@@ -56,7 +56,7 @@ func EnsureDefaults(cfg SplitterConfig) SplitterConfig {
 func StringChunks(parts []string) []Chunk {
 	out := make([]Chunk, len(parts))
 	for i, p := range parts {
-		out[i] = Chunk{Seq: i, Content: strings.TrimSpace(p)}
+		out[i] = Chunk{Seq: i + 1, Content: strings.TrimSpace(p)}
 	}
 	return out
 }

@@ -87,7 +87,7 @@ func cutAt(text string, cuts []int) []Chunk {
 		out = append(out, Chunk{Content: piece})
 	}
 	for i := range out {
-		out[i].Seq = i
+		out[i].Seq = i + 1
 	}
 	return out
 }

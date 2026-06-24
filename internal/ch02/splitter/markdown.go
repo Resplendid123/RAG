@@ -22,7 +22,7 @@ func MarkdownSplit(src string, cfg SplitterConfig) []Chunk {
 			return
 		}
 		chunks = append(chunks, Chunk{
-			Seq:           len(chunks),
+			Seq:           len(chunks) + 1,
 			Content:       strings.TrimSpace(buf.String()),
 			ContextHeader: heading,
 		})
@@ -36,7 +36,7 @@ func MarkdownSplit(src string, cfg SplitterConfig) []Chunk {
 		case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.List:
 			flush()
 			chunks = append(chunks, Chunk{
-				Seq:           len(chunks),
+				Seq:           len(chunks) + 1,
 				Content:       strings.TrimRight(string(v.Lines().Value(bs)), "\n"),
 				ContextHeader: heading,
 			})

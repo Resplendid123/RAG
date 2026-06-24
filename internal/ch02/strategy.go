@@ -102,14 +102,14 @@ func SplitParentChild(text string, parentCfg, childCfg splitter.SplitterConfig) 
 		// parent 真被切碎才入库;否则只留 child,ParentIndex = -1。
 		parentIndex := -1
 		if len(subs) > 1 || (len(subs) == 1 && subs[0].Content != p.Content) {
-			p.Seq = len(keptParents)
+			p.Seq = len(keptParents) + 1
 			keptParents = append(keptParents, p)
 			parentIndex = len(keptParents) - 1
 		}
 		for _, sub := range subs {
 			children = append(children, ChildChunk{
 				Chunk: splitter.Chunk{
-					Seq:           childSeq,
+					Seq:           childSeq + 1,
 					Content:       sub.Content,
 					ContextHeader: mergeBreadcrumb(p.ContextHeader, sub.ContextHeader),
 				},

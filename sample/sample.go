@@ -5,3 +5,6 @@ import _ "embed"
 
 //go:embed rag.md
 var RAG string
+
+//go:embed inferx.md
+var InferX string

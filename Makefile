@@ -12,19 +12,23 @@ migrate:
 run:
 	go run ./cmd $(ARGS)
 
-run-l1:
-	go run ./cmd naive
-
 fix:
 	go fix ./...
 
+run-l1:
+	go run ./cmd migrate naive
+	go run ./cmd naive
+
 run-l2:
+	go run ./cmd migrate chunking
 	go run ./cmd chunking
 
 run-l3:
+	go run ./cmd migrate hybrid
 	go run ./cmd hybrid
 
 run-l4:
+	go run ./cmd migrate rerank
 	go run ./cmd rerank
 
 run-l5:

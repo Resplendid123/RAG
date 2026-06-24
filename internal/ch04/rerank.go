@@ -1,4 +1,4 @@
-package ch03
+package ch04
 
 import (
 	"context"
@@ -10,21 +10,21 @@ import (
 	"rag/internal"
 	"rag/internal/ch02"
 	"rag/internal/ch02/splitter"
+	"rag/internal/ch03"
 	"rag/sample"
 )
 
 func init() {
 	internal.Register(internal.Lesson{
-		Name:        "hybrid",
-		Description: "L3: Hybrid RAG (BM25 + 向量混合检索)",
-		Migrate:     migrateHybrid,
-		Run:         runHybrid,
+		Name:        "rerank",
+		Description: "L4: Rerank RAG (Cross-Encoder 精排)",
+		Migrate:     migrateRerank,
+		Run:         runRerank,
 	})
 }
 
-// migrateHybrid 落 L3 schema：在 L2 基础上加 BM25 索引(paradedb pg_search 扩展)。
-// pg_search 基于 Tantivy + jieba 中文分词,@@@ 是 BM25 匹配算子,paradedb.score(id) 取 BM25 分。
-func migrateHybrid(ctx context.Context, db *gorm.DB) error {
+// migrateRerank L4 schema 与 L3 hybrid 一致:child + parent + dense + bm25,rerank 在 query 时跑,不落库。
+func migrateRerank(ctx context.Context, db *gorm.DB) error {
 	if err := db.WithContext(ctx).Exec(`CREATE EXTENSION IF NOT EXISTS pg_search`).Error; err != nil {
 		return fmt.Errorf("create extension pg_search: %w", err)
 	}
@@ -69,55 +69,76 @@ func migrateHybrid(ctx context.Context, db *gorm.DB) error {
 	`).Error
 }
 
-var l3Sample = sample.InferX
+var l4Sample = sample.InferX
 
 const (
-	demoQuestion3 = "P99 延迟突然飙高,按什么顺序排查?"
-	topK3         = 5
+	demoQuestion4 = "P99 延迟突然飙高,按什么顺序排查?"
+	recallTopN4   = 10 // 宽召回;生产 50-100
+	rerankTopK4   = 5  // rerank 后喂 LLM 的 top-K
 )
 
-func runHybrid(ctx context.Context, deps internal.Deps, _ []string) error {
+func runRerank(ctx context.Context, deps internal.Deps, _ []string) error {
 	parentCfg := splitter.DefaultConfig()
 	childCfg := splitter.DefaultConfig()
 	childCfg.ChunkSize = 120
 	childCfg.ChunkOverlap = 0
 
-	pc := ch02.SplitParentChild(l3Sample, parentCfg, childCfg)
+	pc := ch02.SplitParentChild(l4Sample, parentCfg, childCfg)
 	fmt.Printf("[INDEXING] dense + bm25 → %d chunks (across %d parents)\n",
 		len(pc.Children), len(pc.Parents))
 
-	if err := Ingest(ctx, deps.DB, deps.Embedder,
-		Document{Title: "L3 sample", Lang: "zh"},
+	if err := ch03.Ingest(ctx, deps.DB, deps.Embedder,
+		ch03.Document{Title: "L4 sample", Lang: "zh"},
 		pc.Parents, pc.Children,
 	); err != nil {
 		return fmt.Errorf("ingest: %w", err)
 	}
 
-	fmt.Printf("[QUERY] %q\n", demoQuestion3)
-	dense, err := DenseTopN(ctx, deps.DB, deps.Embedder, demoQuestion3, topK3)
+	fmt.Printf("[QUERY] %q\n", demoQuestion4)
+	dense, err := ch03.DenseTopN(ctx, deps.DB, deps.Embedder, demoQuestion4, recallTopN4)
 	if err != nil {
 		return fmt.Errorf("dense: %w", err)
 	}
-	bm25, err := BM25TopN(ctx, deps.DB, demoQuestion3, topK3)
+	bm25, err := ch03.BM25TopN(ctx, deps.DB, demoQuestion4, recallTopN4)
 	if err != nil {
 		return fmt.Errorf("bm25: %w", err)
 	}
-	fused := RRF([][]Hit{dense, bm25}, 60)
-	if len(fused) > topK3 {
-		fused = fused[:topK3]
+	fused := ch03.RRF([][]ch03.Hit{dense, bm25}, 60)
+	fmt.Printf("[RECALL] hybrid → %d candidates\n", len(fused))
+
+	// before:RRF 排序直接取 top-K,作为 rerank 对照基线。
+	before := fused
+	if len(before) > rerankTopK4 {
+		before = before[:rerankTopK4]
 	}
 
-	fmt.Printf("[DENSE-ONLY]  top-%d hits = %s\n", topK3, idsOf(dense))
-	fmt.Printf("[BM25-ONLY]   top-%d hits = %s\n", topK3, idsOf(bm25))
-	fmt.Printf("[HYBRID-RRF]  top-%d hits = %s\n", len(fused), idsOf(fused))
+	// rerank:抽 content 喂 LLM,按 rerank 后的 index 重排 fused。
+	docs := make([]string, len(fused))
+	for i, h := range fused {
+		docs[i] = h.Content
+	}
+	rr := NewLLMReranker(deps.LLM)
+	ranked := rr.Rerank(ctx, demoQuestion4, docs)
 
-	chunks, err := LoadChunks(ctx, deps.DB, fused)
+	after := make([]ch03.Hit, 0, rerankTopK4)
+	scoreSummary := make([]string, 0, rerankTopK4)
+	for i, r := range ranked {
+		if i >= rerankTopK4 {
+			break
+		}
+		after = append(after, fused[r.Index])
+		scoreSummary = append(scoreSummary, fmt.Sprintf("idx=%d score=%.1f", fused[r.Index].ChunkID, r.Score))
+	}
+	fmt.Printf("[BEFORE RERANK] top-%d hits = %s   (RRF 排序)\n", len(before), idsOf4(before))
+	fmt.Printf("[AFTER RERANK]  top-%d hits = %s   (%s)\n", len(after), idsOf4(after), strings.Join(scoreSummary, ", "))
+
+	chunks, err := ch03.LoadChunks(ctx, deps.DB, after)
 	if err != nil {
 		return fmt.Errorf("load chunks: %w", err)
 	}
 
 	fmt.Println("[ANSWERING]")
-	ans, err := Generate(ctx, deps.LLM, demoQuestion3, chunks)
+	ans, err := ch03.Generate(ctx, deps.LLM, demoQuestion4, chunks)
 	if err != nil {
 		return fmt.Errorf("generate: %w", err)
 	}
@@ -125,7 +146,7 @@ func runHybrid(ctx context.Context, deps internal.Deps, _ []string) error {
 	return nil
 }
 
-func idsOf(hits []Hit) string {
+func idsOf4(hits []ch03.Hit) string {
 	if len(hits) == 0 {
 		return "[]"
 	}
