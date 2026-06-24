@@ -13,6 +13,11 @@ type Config struct {
 	Database  DatabaseConfig  `yaml:"database"`
 	LLM       LLMConfig       `yaml:"llm"`
 	Embedding EmbeddingConfig `yaml:"embedding"`
+	WebSearch WebSearchConfig `yaml:"web_search"`
+}
+
+type WebSearchConfig struct {
+	TavilyAPIKey string `yaml:"tavily_api_key"`
 }
 
 type DatabaseConfig struct {

@@ -36,9 +36,11 @@ run-l5:
 	go run ./cmd query
 
 run-l6:
+	go run ./cmd migrate pipeline
 	go run ./cmd pipeline
 
 run-l7:
+	go run ./cmd migrate agentic
 	go run ./cmd agentic
 
 run-l8:
