@@ -32,6 +32,7 @@ run-l4:
 	go run ./cmd rerank
 
 run-l5:
+	go run ./cmd migrate query
 	go run ./cmd query
 
 run-l6:

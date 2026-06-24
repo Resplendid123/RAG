@@ -8,3 +8,6 @@ var RAG string
 
 //go:embed inferx.md
 var InferX string
+
+//go:embed handbook.md
+var Handbook string
