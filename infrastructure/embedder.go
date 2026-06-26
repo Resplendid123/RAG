@@ -13,13 +13,14 @@ type Embedder interface {
 	Dimension() int
 }
 
-type openaiEmbedder struct {
+// OpenAIEmbedder 兼容 OpenAI / Ollama 协议。
+type OpenAIEmbedder struct {
 	client    openai.Client
 	model     string
 	dimension int
 }
 
-func (e *openaiEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+func (e *OpenAIEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	resp, err := e.client.Embeddings.New(ctx, openai.EmbeddingNewParams{
 		Input: openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: texts},
 		Model: e.model,
@@ -38,19 +39,11 @@ func (e *openaiEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 	return out, nil
 }
 
-func (e *openaiEmbedder) Dimension() int { return e.dimension }
+func (e *OpenAIEmbedder) Dimension() int { return e.dimension }
 
-func NewOpenAIEmbedder(baseURL, apiKey, model string, dimension int) Embedder {
-	return &openaiEmbedder{
+func NewOpenAIEmbedder(baseURL, apiKey, model string, dimension int) *OpenAIEmbedder {
+	return &OpenAIEmbedder{
 		client:    openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL)),
-		model:     model,
-		dimension: dimension,
-	}
-}
-
-func NewOllamaEmbedder(baseURL, model string, dimension int) Embedder {
-	return &openaiEmbedder{
-		client:    openai.NewClient(option.WithAPIKey("ollama"), option.WithBaseURL(baseURL)),
 		model:     model,
 		dimension: dimension,
 	}

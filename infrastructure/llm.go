@@ -43,7 +43,7 @@ type LLM interface {
 	ChatWithTools(ctx context.Context, msgs []Message, tools []ToolSpec) (ChatResponse, error)
 }
 
-// openaiBackend 是 OpenAI / Ollama（兼容协议）的共享后端。
+// openaiBackend 是 OpenAI / Ollama（兼容协议）的共享实现,同时是 LLM 接口。
 type openaiBackend struct {
 	client openai.Client
 	model  string
@@ -59,8 +59,16 @@ func newOpenAIBackend(baseURL, apiKey, model string) *openaiBackend {
 	}
 }
 
-func (b *openaiBackend) complete(ctx context.Context, prompt string) (string, error) {
+func (b *openaiBackend) Complete(ctx context.Context, prompt string) (string, error) {
 	return b.chat(ctx, []openai.ChatCompletionMessageParamUnion{openai.UserMessage(prompt)})
+}
+
+func (b *openaiBackend) Chat(ctx context.Context, msgs []Message) (string, error) {
+	return b.chat(ctx, convertMessages(msgs))
+}
+
+func (b *openaiBackend) ChatWithTools(ctx context.Context, msgs []Message, tools []ToolSpec) (ChatResponse, error) {
+	return b.chatWithTools(ctx, msgs, tools)
 }
 
 func convertMessages(msgs []Message) []openai.ChatCompletionMessageParamUnion {
@@ -117,7 +125,6 @@ func (b *openaiBackend) chat(ctx context.Context, msgs []openai.ChatCompletionMe
 		Model:    b.model,
 		Messages: msgs,
 	}
-
 	resp, err := b.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return "", fmt.Errorf("openai chat: %w", err)
@@ -146,7 +153,6 @@ func (b *openaiBackend) chatWithTools(ctx context.Context, msgs []Message, tools
 			Parameters:  p,
 		}))
 	}
-
 	resp, err := b.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return ChatResponse{}, fmt.Errorf("openai chat with tools: %w", err)
@@ -164,44 +170,4 @@ func (b *openaiBackend) chatWithTools(ctx context.Context, msgs []Message, tools
 		})
 	}
 	return out, nil
-}
-
-type OpenAILLM struct {
-	b *openaiBackend
-}
-
-func NewOpenAILLM(baseURL, apiKey, model string) *OpenAILLM {
-	return &OpenAILLM{b: newOpenAIBackend(baseURL, apiKey, model)}
-}
-
-func (l *OpenAILLM) Complete(ctx context.Context, prompt string) (string, error) {
-	return l.b.complete(ctx, prompt)
-}
-
-func (l *OpenAILLM) Chat(ctx context.Context, msgs []Message) (string, error) {
-	return l.b.chat(ctx, convertMessages(msgs))
-}
-
-func (l *OpenAILLM) ChatWithTools(ctx context.Context, msgs []Message, tools []ToolSpec) (ChatResponse, error) {
-	return l.b.chatWithTools(ctx, msgs, tools)
-}
-
-type OllamaLLM struct {
-	b *openaiBackend
-}
-
-func NewOllamaLLM(baseURL, model string) *OllamaLLM {
-	return &OllamaLLM{b: newOpenAIBackend(baseURL, "ollama", model)}
-}
-
-func (l *OllamaLLM) Complete(ctx context.Context, prompt string) (string, error) {
-	return l.b.complete(ctx, prompt)
-}
-
-func (l *OllamaLLM) Chat(ctx context.Context, msgs []Message) (string, error) {
-	return l.b.chat(ctx, convertMessages(msgs))
-}
-
-func (l *OllamaLLM) ChatWithTools(ctx context.Context, msgs []Message, tools []ToolSpec) (ChatResponse, error) {
-	return l.b.chatWithTools(ctx, msgs, tools)
 }

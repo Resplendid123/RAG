@@ -5,15 +5,21 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 )
 
 type Config struct {
 	Database  DatabaseConfig  `yaml:"database"`
+	Neo4j     Neo4jConfig     `yaml:"neo4j"`
 	LLM       LLMConfig       `yaml:"llm"`
 	Embedding EmbeddingConfig `yaml:"embedding"`
 	WebSearch WebSearchConfig `yaml:"web_search"`
+}
+
+type Neo4jConfig struct {
+	URI      string `yaml:"uri"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	Database string `yaml:"database"`
 }
 
 type WebSearchConfig struct {
@@ -54,18 +60,4 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config.yaml: %w", err)
 	}
 	return &cfg, nil
-}
-
-func InitDB(cfg DatabaseConfig) (*gorm.DB, error) {
-	dsn := fmt.Sprintf("postgresql://%s:%s@%s:%s/%s?sslmode=%s",
-		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DBName, cfg.SSLMode)
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
-	}
-	if err := db.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
-		return nil, fmt.Errorf("failed to enable vector extension: %w", err)
-	}
-
-	return db, nil
 }

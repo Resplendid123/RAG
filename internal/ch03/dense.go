@@ -8,18 +8,14 @@ import (
 	"gorm.io/gorm"
 
 	"rag/infrastructure"
+	"rag/internal/ragcore"
 )
 
 // Hit 是 dense / bm25 单路召回的统一结构;RRF 用 ChunkID 对齐,Content 给回显/生成用。
-type Hit struct {
-	ChunkID int64
-	Content string
-	Source  string
-	Rank    int
-}
+type Hit = ragcore.Hit
 
-// DenseTopN 走 embedding 余弦距离,返回 topN。Rank 从 0 起。
-func DenseTopN(ctx context.Context, db *gorm.DB, emb infrastructure.Embedder, q string, topN int) ([]Hit, error) {
+// DenseSearch 走 embedding 余弦距离,返回 topN。Rank 从 0 起。
+func DenseSearch(ctx context.Context, db *gorm.DB, emb infrastructure.Embedder, q string, topN int) ([]Hit, error) {
 	if topN <= 0 {
 		topN = 3
 	}

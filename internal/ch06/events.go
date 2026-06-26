@@ -16,9 +16,9 @@ const (
 	CHAT_COMPLETION   EventType = "chat_completion"
 )
 
-// ChatManage 是 plugin 间的共享状态:plugin A 写字段,plugin B 读字段。
+// ChatContext 是 plugin 间的共享状态:plugin A 写字段,plugin B 读字段。
 // 字段读写约定写在各 plugin 顶部注释里,避免隐式依赖。
-type ChatManage struct {
+type ChatContext struct {
 	Query        string     // 用户原始问题
 	History      []string   // load_history 写入,query_understand / into_chat_message 读
 	RewriteQuery string     // query_understand 写入,chunk_search / chunk_rerank 读

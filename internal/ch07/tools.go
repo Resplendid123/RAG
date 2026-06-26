@@ -47,11 +47,11 @@ func registerTools(r *agent.Registry, db *gorm.DB, emb infrastructure.Embedder, 
 				in.TopK = 5
 			}
 			// 走 ch03 hybrid:dense + BM25 + RRF
-			dense, err := ch03.DenseTopN(ctx, db, emb, in.Query, in.TopK)
+			dense, err := ch03.DenseSearch(ctx, db, emb, in.Query, in.TopK)
 			if err != nil {
 				return nil, fmt.Errorf("dense: %w", err)
 			}
-			bm25, err := ch03.BM25TopN(ctx, db, in.Query, in.TopK)
+			bm25, err := ch03.BM25Search(ctx, db, in.Query, in.TopK)
 			if err != nil {
 				// BM25 语法失败时降级 dense-only
 				return hitsToMap(dense), nil
@@ -167,9 +167,9 @@ func hitsToMap(hits []ch03.Hit) []map[string]any {
 // selectOnly 简单 read-only 校验:去掉注释和字符串后必须以 SELECT/WITH 开头,且无 DDL/DML 关键字。
 func selectOnly(sql string) bool {
 	// 删行注释
-	for _, line := range strings.Split(sql, "\n") {
-		if i := strings.Index(line, "--"); i >= 0 {
-			sql = strings.Replace(sql, line, line[:i], 1)
+	for line := range strings.SplitSeq(sql, "\n") {
+		if before, _, ok := strings.Cut(line, "--"); ok {
+			sql = strings.Replace(sql, line, before, 1)
 		}
 	}
 	upper := strings.ToUpper(strings.TrimSpace(sql))

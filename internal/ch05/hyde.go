@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"rag/infrastructure"
+	"rag/internal/ragcore"
 )
 
 const hydePrompt = `基于你的知识,用一段话简洁回答以下问题(不需要真实准确,只要像文档中的写法)。
@@ -23,7 +24,7 @@ func HyDEAnswer(ctx context.Context, llm infrastructure.LLM, q, style string) (s
 	if err != nil {
 		return q, err
 	}
-	out = cleanAnswer(out)
+	out = ragcore.StripThink(out)
 	if out == "" {
 		return q, nil
 	}

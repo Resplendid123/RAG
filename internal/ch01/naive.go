@@ -3,9 +3,9 @@ package ch01
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
-	"gorm.io/gorm"
-
+	"rag/infrastructure"
 	"rag/internal"
 	"rag/sample"
 )
@@ -20,18 +20,14 @@ func init() {
 }
 
 // Document 是 documents 表的最小化业务视图。
-type Document struct {
-	ID        int64
-	Title     string
-	SourceURL string
-	Lang      string
-}
+type Document = infrastructure.Document
 
 var l1Sample = sample.RAG
 
 const demoQuestion = "RAG 的核心流程是什么?"
 
-func migrateNaive(ctx context.Context, db *gorm.DB) error {
+func migrateNaive(ctx context.Context, deps internal.Deps) error {
+	db := deps.DB
 	return db.WithContext(ctx).Exec(`
         CREATE TABLE IF NOT EXISTS documents (
             id          BIGSERIAL PRIMARY KEY,
@@ -56,8 +52,8 @@ func migrateNaive(ctx context.Context, db *gorm.DB) error {
 
 // runNaive 是 L1 的编排入口:chunk → ingest → retrieve → generate 四步串起来。
 func runNaive(ctx context.Context, deps internal.Deps, _ []string) error {
-	chunksIn := Chunk(l1Sample, 200, 30)
-	fmt.Printf("[CHUNKING] → %d chunks (size=200, overlap=30)\n", len(chunksIn))
+	chunksIn := Split(l1Sample, 200, 30)
+	slog.Info(fmt.Sprintf("[CHUNKING] → %d chunks (size=200, overlap=30)\n", len(chunksIn)))
 
 	if err := Ingest(ctx, deps.DB, deps.Embedder,
 		Document{Title: "L1 sample", Lang: "zh"},
@@ -71,13 +67,13 @@ func runNaive(ctx context.Context, deps internal.Deps, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("retrieve: %w", err)
 	}
-	fmt.Printf("[RETRIEVED] %d chunks:\n", len(chunks))
+	slog.Info(fmt.Sprintf("[RETRIEVED] %d chunks:\n", len(chunks)))
 	for i, c := range chunks {
 		snippet := c.Content
 		if r := []rune(snippet); len(r) > 80 {
 			snippet = string(r[:80]) + "..."
 		}
-		fmt.Printf("  [%d] %s\n", i+1, snippet)
+		slog.Info(fmt.Sprintf("  [%d] %s\n", i+1, snippet))
 	}
 
 	fmt.Println("[ANSWERING]")

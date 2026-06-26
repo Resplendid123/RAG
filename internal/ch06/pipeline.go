@@ -3,13 +3,13 @@ package ch06
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"gorm.io/gorm"
 
 	"rag/infrastructure"
 	"rag/internal"
-	"rag/internal/ch02"
 	"rag/internal/ch02/splitter"
 	"rag/internal/ch03"
 	"rag/internal/ch04"
@@ -27,49 +27,9 @@ func init() {
 }
 
 // migratePipeline 与 L4/L5 同 schema:parent + child + dense + bm25,流水线只在 query 时跑。
-func migratePipeline(ctx context.Context, db *gorm.DB) error {
-	if err := db.WithContext(ctx).Exec(`CREATE EXTENSION IF NOT EXISTS pg_search`).Error; err != nil {
-		return fmt.Errorf("create extension pg_search: %w", err)
-	}
-	return db.WithContext(ctx).Exec(`
-		DROP TABLE IF EXISTS document_chunks CASCADE;
-		DROP TABLE IF EXISTS document_chunks_parent CASCADE;
-		DROP TABLE IF EXISTS documents CASCADE;
-
-		CREATE TABLE documents (
-			id          BIGSERIAL PRIMARY KEY,
-			title       TEXT NOT NULL,
-			source_url  TEXT,
-			lang        TEXT DEFAULT 'zh',
-			content_hash TEXT,
-			created_at  TIMESTAMPTZ DEFAULT now()
-		);
-
-		CREATE TABLE document_chunks_parent (
-			id          BIGSERIAL PRIMARY KEY,
-			document_id BIGINT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-			chunk_index INTEGER NOT NULL,
-			content     TEXT NOT NULL,
-			token_count INTEGER,
-			created_at  TIMESTAMPTZ DEFAULT NOW()
-		);
-
-		CREATE TABLE document_chunks (
-			id          BIGSERIAL PRIMARY KEY,
-			parent_id   BIGINT REFERENCES document_chunks_parent(id) ON DELETE CASCADE,
-			document_id BIGINT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-			chunk_index INT NOT NULL,
-			content     TEXT NOT NULL,
-			embedding   VECTOR(1024),
-			created_at  TIMESTAMPTZ DEFAULT now()
-		);
-		CREATE INDEX document_chunks_embedding_hnsw_idx
-			ON document_chunks USING hnsw (embedding vector_cosine_ops);
-		CREATE INDEX document_chunks_bm25_idx
-			ON document_chunks
-			USING bm25 (id, content)
-			WITH (key_field='id');
-	`).Error
+func migratePipeline(ctx context.Context, deps internal.Deps) error {
+	db := deps.DB
+	return infrastructure.EnsureHybridSchema(ctx, db)
 }
 
 var l6Sample = sample.Handbook
@@ -86,20 +46,20 @@ var l6History []string
 
 // ---------- Plugin 实现 ----------
 
-// LoadHistoryPlugin:从 l6History 读历史写入 cm.History(教学 demo 替身,生产对接 session store)。
+// LoadHistoryPlugin:从 l6History 读历史写入 cc.History(教学 demo 替身,生产对接 session store)。
 type LoadHistoryPlugin struct{}
 
 func (LoadHistoryPlugin) ActivationEvents() []EventType { return []EventType{LOAD_HISTORY} }
 
-func (LoadHistoryPlugin) OnEvent(_ context.Context, _ EventType, cm *ChatManage, next func() error) error {
+func (LoadHistoryPlugin) OnEvent(_ context.Context, _ EventType, cc *ChatContext, next func() error) error {
 	if len(l6History) > 0 {
-		cm.History = append([]string(nil), l6History...)
+		cc.History = append([]string(nil), l6History...)
 	}
-	fmt.Printf("            history rounds: %d\n", len(cm.History))
+	slog.Info(fmt.Sprintf("            history rounds: %d\n", len(cc.History)))
 	return next()
 }
 
-// QueryUnderstandPlugin:用 ch05.RewriteQuery 做 query 改写(读 history + 原 query,写 cm.RewriteQuery)。
+// QueryUnderstandPlugin:用 ch05.RewriteQuery 做 query 改写(读 history + 原 query,写 cc.RewriteQuery)。
 // 改写失败时降级为原 query(见 ch05.RewriteQuery 行为),不会让链断。
 type QueryUnderstandPlugin struct {
 	LLM infrastructure.LLM
@@ -107,16 +67,16 @@ type QueryUnderstandPlugin struct {
 
 func (*QueryUnderstandPlugin) ActivationEvents() []EventType { return []EventType{QUERY_UNDERSTAND} }
 
-func (p *QueryUnderstandPlugin) OnEvent(ctx context.Context, _ EventType, cm *ChatManage, next func() error) error {
-	rewritten, _ := ch05.RewriteQuery(ctx, p.LLM, cm.Query, cm.History)
-	cm.RewriteQuery = rewritten
-	if rewritten != cm.Query {
-		fmt.Printf("            rewrite: %q → %q\n", cm.Query, rewritten)
+func (p *QueryUnderstandPlugin) OnEvent(ctx context.Context, _ EventType, cc *ChatContext, next func() error) error {
+	rewritten, _ := ch05.RewriteQuery(ctx, p.LLM, cc.Query, cc.History)
+	cc.RewriteQuery = rewritten
+	if rewritten != cc.Query {
+		slog.Info(fmt.Sprintf("            rewrite: %q → %q\n", cc.Query, rewritten))
 	}
 	return next()
 }
 
-// ChunkSearchPlugin:读 cm.RewriteQuery(否则 cm.Query),写 cm.Chunks(dense + BM25 + RRF)。
+// ChunkSearchPlugin:读 cc.RewriteQuery(否则 cc.Query),写 cc.Chunks(dense + BM25 + RRF)。
 type ChunkSearchPlugin struct {
 	DB       *gorm.DB
 	Embedder infrastructure.Embedder
@@ -125,25 +85,25 @@ type ChunkSearchPlugin struct {
 
 func (p *ChunkSearchPlugin) ActivationEvents() []EventType { return []EventType{CHUNK_SEARCH} }
 
-func (p *ChunkSearchPlugin) OnEvent(ctx context.Context, _ EventType, cm *ChatManage, next func() error) error {
-	q := cm.RewriteQuery
+func (p *ChunkSearchPlugin) OnEvent(ctx context.Context, _ EventType, cc *ChatContext, next func() error) error {
+	q := cc.RewriteQuery
 	if q == "" {
-		q = cm.Query
+		q = cc.Query
 	}
-	dense, err := ch03.DenseTopN(ctx, p.DB, p.Embedder, q, p.TopK)
+	dense, err := ch03.DenseSearch(ctx, p.DB, p.Embedder, q, p.TopK)
 	if err != nil {
 		return fmt.Errorf("chunk_search dense: %w", err)
 	}
-	bm25, err := ch03.BM25TopN(ctx, p.DB, q, p.TopK)
+	bm25, err := ch03.BM25Search(ctx, p.DB, q, p.TopK)
 	if err != nil {
-		cm.Chunks = dense
+		cc.Chunks = dense
 		return next()
 	}
-	cm.Chunks = ch03.RRF([][]ch03.Hit{dense, bm25}, 60)
+	cc.Chunks = ch03.RRF([][]ch03.Hit{dense, bm25}, 60)
 	return next()
 }
 
-// RerankPlugin:读 cm.Chunks(用 rewrite 后的 query),写 cm.Reranked(按相关性降序,不去截 K)。
+// RerankPlugin:读 cc.Chunks(用 rewrite 后的 query),写 cc.Reranked(按相关性降序,不去截 K)。
 // 截 K 是下游 filter_top_k 的事,这样 "rag" / "rag_stream" preset 在这一段行为一致。
 type RerankPlugin struct {
 	Reranker ch04.Reranker
@@ -151,40 +111,40 @@ type RerankPlugin struct {
 
 func (p *RerankPlugin) ActivationEvents() []EventType { return []EventType{CHUNK_RERANK} }
 
-func (p *RerankPlugin) OnEvent(ctx context.Context, _ EventType, cm *ChatManage, next func() error) error {
-	if len(cm.Chunks) == 0 {
+func (p *RerankPlugin) OnEvent(ctx context.Context, _ EventType, cc *ChatContext, next func() error) error {
+	if len(cc.Chunks) == 0 {
 		return next()
 	}
-	q := cm.RewriteQuery
+	q := cc.RewriteQuery
 	if q == "" {
-		q = cm.Query
+		q = cc.Query
 	}
-	docs := make([]string, len(cm.Chunks))
-	for i, h := range cm.Chunks {
+	docs := make([]string, len(cc.Chunks))
+	for i, h := range cc.Chunks {
 		docs[i] = h.Content
 	}
 	ranked := p.Reranker.Rerank(ctx, q, docs)
 	out := make([]ch03.Hit, 0, len(ranked))
 	for _, r := range ranked {
-		if r.Index < 0 || r.Index >= len(cm.Chunks) {
+		if r.Index < 0 || r.Index >= len(cc.Chunks) {
 			continue
 		}
-		out = append(out, cm.Chunks[r.Index])
+		out = append(out, cc.Chunks[r.Index])
 	}
-	cm.Reranked = out
+	cc.Reranked = out
 	return next()
 }
 
-// MergePlugin:读 cm.Reranked(否则 cm.Chunks),写 cm.Merged(去重)。
+// MergePlugin:读 cc.Reranked(否则 cc.Chunks),写 cc.Merged(去重)。
 // 教学版没有父子 chunk,这步主要是 plugin 拆分点;生产里是父子拼接去重。
 type MergePlugin struct{}
 
 func (MergePlugin) ActivationEvents() []EventType { return []EventType{CHUNK_MERGE} }
 
-func (MergePlugin) OnEvent(_ context.Context, _ EventType, cm *ChatManage, next func() error) error {
-	src := cm.Reranked
+func (MergePlugin) OnEvent(_ context.Context, _ EventType, cc *ChatContext, next func() error) error {
+	src := cc.Reranked
 	if len(src) == 0 {
-		src = cm.Chunks
+		src = cc.Chunks
 	}
 	seen := make(map[int64]struct{}, len(src))
 	out := make([]ch03.Hit, 0, len(src))
@@ -195,33 +155,33 @@ func (MergePlugin) OnEvent(_ context.Context, _ EventType, cm *ChatManage, next 
 		seen[h.ChunkID] = struct{}{}
 		out = append(out, h)
 	}
-	cm.Merged = out
+	cc.Merged = out
 	return next()
 }
 
-// FilterTopKPlugin:读 cm.Merged,截到 top-K 后写回 cm.Merged。"rag_stream" 才有这一步。
+// FilterTopKPlugin:读 cc.Merged,截到 top-K 后写回 cc.Merged。"rag_stream" 才有这一步。
 type FilterTopKPlugin struct{ K int }
 
 func (FilterTopKPlugin) ActivationEvents() []EventType { return []EventType{FILTER_TOP_K} }
 
-func (p FilterTopKPlugin) OnEvent(_ context.Context, _ EventType, cm *ChatManage, next func() error) error {
-	before := len(cm.Merged)
+func (p FilterTopKPlugin) OnEvent(_ context.Context, _ EventType, cc *ChatContext, next func() error) error {
+	before := len(cc.Merged)
 	if p.K > 0 && before > p.K {
-		cm.Merged = cm.Merged[:p.K]
+		cc.Merged = cc.Merged[:p.K]
 	}
-	fmt.Printf("            filter: %d → %d\n", before, len(cm.Merged))
+	slog.Info(fmt.Sprintf("            filter: %d → %d\n", before, len(cc.Merged)))
 	return next()
 }
 
-// IntoChatMessagePlugin:读 cm.History + cm.Merged + cm.Query,写 cm.Prompt(参考资料 + history + 问题)。
+// IntoChatMessagePlugin:读 cc.History + cc.Merged + cc.Query,写 cc.Prompt(参考资料 + history + 问题)。
 type IntoChatMessagePlugin struct {
 	DB *gorm.DB
 }
 
 func (*IntoChatMessagePlugin) ActivationEvents() []EventType { return []EventType{INTO_CHAT_MESSAGE} }
 
-func (p *IntoChatMessagePlugin) OnEvent(ctx context.Context, _ EventType, cm *ChatManage, next func() error) error {
-	chunks, err := ch03.LoadChunks(ctx, p.DB, cm.Merged)
+func (p *IntoChatMessagePlugin) OnEvent(ctx context.Context, _ EventType, cc *ChatContext, next func() error) error {
+	chunks, err := ch03.LoadChunks(ctx, p.DB, cc.Merged)
 	if err != nil {
 		return fmt.Errorf("load chunks: %w", err)
 	}
@@ -230,26 +190,26 @@ func (p *IntoChatMessagePlugin) OnEvent(ctx context.Context, _ EventType, cm *Ch
 		fmt.Fprintf(&b, "[%d] %s\n", i+1, c.Content)
 	}
 	var histStr string
-	if len(cm.History) > 0 {
-		histStr = "对话历史:\n" + strings.Join(cm.History, "\n") + "\n\n"
+	if len(cc.History) > 0 {
+		histStr = "对话历史:\n" + strings.Join(cc.History, "\n") + "\n\n"
 	}
-	cm.Prompt = fmt.Sprintf(promptTpl, histStr, b.String(), cm.Query)
+	cc.Prompt = fmt.Sprintf(promptTpl, histStr, b.String(), cc.Query)
 	return next()
 }
 
-// ChatCompletionPlugin:读 cm.Prompt,写 cm.Answer。
+// ChatCompletionPlugin:读 cc.Prompt,写 cc.Answer。
 type ChatCompletionPlugin struct {
 	LLM infrastructure.LLM
 }
 
 func (*ChatCompletionPlugin) ActivationEvents() []EventType { return []EventType{CHAT_COMPLETION} }
 
-func (p *ChatCompletionPlugin) OnEvent(ctx context.Context, _ EventType, cm *ChatManage, next func() error) error {
-	out, err := p.LLM.Complete(ctx, cm.Prompt)
+func (p *ChatCompletionPlugin) OnEvent(ctx context.Context, _ EventType, cc *ChatContext, next func() error) error {
+	out, err := p.LLM.Complete(ctx, cc.Prompt)
 	if err != nil {
 		return fmt.Errorf("chat completion: %w", err)
 	}
-	cm.Answer = out
+	cc.Answer = out
 	return next()
 }
 
@@ -270,12 +230,12 @@ func runPipeline(ctx context.Context, deps internal.Deps, _ []string) error {
 	childCfg.ChunkSize = 120
 	childCfg.ChunkOverlap = 0
 
-	pc := ch02.SplitParentChild(l6Sample, parentCfg, childCfg)
+	pc := splitter.SplitParentChild(l6Sample, parentCfg, childCfg)
 	fmt.Printf("[INDEXING] dense + bm25 → %d chunks (across %d parents)\n",
 		len(pc.Children), len(pc.Parents))
 
 	if err := ch03.Ingest(ctx, deps.DB, deps.Embedder,
-		ch03.Document{Title: "L6 sample", Lang: "zh"},
+		infrastructure.Document{Title: "L6 sample", Lang: "zh"},
 		pc.Parents, pc.Children,
 	); err != nil {
 		return fmt.Errorf("ingest: %w", err)
@@ -294,15 +254,15 @@ func runPipeline(ctx context.Context, deps internal.Deps, _ []string) error {
 
 	printPresets()
 	for _, preset := range []string{"rag", "rag_stream"} {
-		cm := &ChatManage{Query: demoQuestion6}
-		fmt.Printf("\n[RUN] preset=%q query=%q\n", preset, demoQuestion6)
-		if err := em.TriggersForPreset(ctx, preset, cm); err != nil {
+		cc := &ChatContext{Query: demoQuestion6}
+		slog.Info(fmt.Sprintf("\n[RUN] preset=%q query=%q\n", preset, demoQuestion6))
+		if err := em.TriggerPreset(ctx, preset, cc); err != nil {
 			return fmt.Errorf("preset %s: %w", preset, err)
 		}
 		fmt.Println("\n[ANSWER]")
-		fmt.Println(cm.Answer)
+		fmt.Println(cc.Answer)
 		// 写入 history,让下一个 preset 看到
-		l6History = append(l6History, fmt.Sprintf("Q: %s\nA: %s", cm.Query, cm.Answer))
+		l6History = append(l6History, fmt.Sprintf("Q: %s\nA: %s", cc.Query, cc.Answer))
 		if len(l6History) > 6 {
 			l6History = l6History[len(l6History)-6:]
 		}
@@ -316,6 +276,6 @@ func printPresets() {
 		for i, et := range Pipeline[name] {
 			parts[i] = string(et)
 		}
-		fmt.Printf("[PRESET] %-12q: %s\n", name, strings.Join(parts, " → "))
+		slog.Info(fmt.Sprintf("[PRESET] %-12q: %s\n", name, strings.Join(parts, " → ")))
 	}
 }

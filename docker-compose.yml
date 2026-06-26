@@ -3,6 +3,7 @@ networks:
 
 volumes:
   pg_data:
+  neo4j_data:
 
 services:
   postgres:
@@ -20,3 +21,20 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
+
+  neo4j:
+    image: neo4j:latest
+    container_name: rag-neo4j
+    volumes:
+      - neo4j_data:/data
+    environment:
+      - NEO4J_AUTH=${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-password}
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4JLABS_PLUGINS=["apoc"]
+    networks: [rag]
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    restart: unless-stopped

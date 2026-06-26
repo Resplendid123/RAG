@@ -1,7 +1,7 @@
 package ch01
 
-// Chunk 按 rune 数硬切 + 重叠;不感知语义边界。
-func Chunk(text string, size, overlap int) []string {
+// Split 按 rune 数硬切 + 重叠;不感知语义边界。
+func Split(text string, size, overlap int) []string {
 	if size <= 0 {
 		return nil
 	}

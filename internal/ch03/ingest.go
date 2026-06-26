@@ -2,34 +2,27 @@ package ch03
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"strings"
+	"log/slog"
 
 	"github.com/pgvector/pgvector-go"
 	"gorm.io/gorm"
 
 	"rag/infrastructure"
-	"rag/internal/ch02"
 	"rag/internal/ch02/splitter"
+	"rag/internal/ragcore"
 )
 
-type Document struct {
-	ID        int64
-	Title     string
-	SourceURL string
-	Lang      string
-}
+type Document = infrastructure.Document
 
 // Ingest 把 doc + parents + children 写进 documents / document_chunks_parent / document_chunks。
 func Ingest(
 	ctx context.Context,
 	db *gorm.DB,
 	emb infrastructure.Embedder,
-	doc Document,
+	doc infrastructure.Document,
 	parents []splitter.Chunk,
-	children []ch02.ChildChunk,
+	children []splitter.ChildChunk,
 ) error {
 	if len(parents) == 0 && len(children) == 0 {
 		return nil
@@ -42,13 +35,13 @@ func Ingest(
 			hashSrc[i] = splitter.Chunk{Content: k.Content}
 		}
 	}
-	hash := sha256Hex(joinContents(hashSrc))
+	hash := ragcore.ContentHash(hashSrc)
 
 	flat := make([]string, len(children))
 	for i, k := range children {
 		flat[i] = k.Content
 	}
-	fmt.Printf("[EMBEDDING] → %d child vectors\n", len(flat))
+	slog.Info(fmt.Sprintf("[EMBEDDING] → %d child vectors\n", len(flat)))
 	vecs, err := emb.Embed(ctx, flat)
 	if err != nil {
 		return err
@@ -68,7 +61,7 @@ func Ingest(
 			if err := tx.Raw(
 				`INSERT INTO document_chunks_parent (document_id, chunk_index, content, token_count)
 				 VALUES (?,?,?,?) RETURNING id`,
-				docID, pi, p.Content, ch02.EstimateTokens(p.Content),
+				docID, pi, p.Content, splitter.EstimateTokens(p.Content),
 			).Scan(&parentIDs[pi]).Error; err != nil {
 				return err
 			}
@@ -89,17 +82,4 @@ func Ingest(
 		}
 		return nil
 	})
-}
-
-func sha256Hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
-
-func joinContents(chunks []splitter.Chunk) string {
-	parts := make([]string, len(chunks))
-	for i, c := range chunks {
-		parts[i] = c.Content
-	}
-	return strings.Join(parts, "\n")
 }

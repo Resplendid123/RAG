@@ -1,23 +1,21 @@
-package ch02
+package splitter
 
 import (
 	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
-
-	"rag/internal/ch02/splitter"
 )
 
 // tier 是 chain 一层,Name 给日志用,Split 是切分实现。
 type tier struct {
 	name  string
-	split func(string, splitter.SplitterConfig) []splitter.Chunk
+	split func(string, SplitterConfig) []Chunk
 }
 
 // ValidateChunks 校验切分结果:chunk 数 > 0、单 chunk ≤ size×3、覆盖原文 ≥ 60%。
 // 60% 经验值——Markdown 把 heading 抽到 ContextHeader,总覆盖会下降。
-func ValidateChunks(chunks []splitter.Chunk, orig string, cfg splitter.SplitterConfig) error {
+func ValidateChunks(chunks []Chunk, orig string, cfg SplitterConfig) error {
 	if len(chunks) == 0 {
 		return errors.New("no chunks")
 	}
@@ -40,8 +38,8 @@ func ValidateChunks(chunks []splitter.Chunk, orig string, cfg splitter.SplitterC
 }
 
 // SplitWithTierChain 按链顺序跑,ValidateChunks 通过即返回,失败降级下一层。
-func SplitWithTierChain(text string, cfg splitter.SplitterConfig) (chunks []splitter.Chunk, used string, err error) {
-	cfg = splitter.EnsureDefaults(cfg)
+func SplitWithTierChain(text string, cfg SplitterConfig) (chunks []Chunk, used string, err error) {
+	cfg = EnsureDefaults(cfg)
 	for _, t := range buildChain(cfg) {
 		got := t.split(text, cfg)
 		if vErr := ValidateChunks(got, text, cfg); vErr == nil {
@@ -50,35 +48,32 @@ func SplitWithTierChain(text string, cfg splitter.SplitterConfig) (chunks []spli
 			err = vErr
 		}
 	}
-	return splitter.FixedSplit(text, cfg), "fixed", err
+	return FixedSplit(text, cfg), "fixed", err
 }
 
 // buildChain 按 cfg.Strategy 选链顺序;空值走全 4 层。
-func buildChain(cfg splitter.SplitterConfig) []tier {
+func buildChain(cfg SplitterConfig) []tier {
 	switch cfg.Strategy {
 	case "heuristic":
-		return []tier{{"heuristic", splitter.HeuristicSplit}, {"recursive", splitter.RecursiveSplit}, {"fixed", splitter.FixedSplit}}
+		return []tier{{"heuristic", HeuristicSplit}, {"recursive", RecursiveSplit}, {"fixed", FixedSplit}}
 	case "recursive":
-		return []tier{{"recursive", splitter.RecursiveSplit}, {"fixed", splitter.FixedSplit}}
+		return []tier{{"recursive", RecursiveSplit}, {"fixed", FixedSplit}}
 	case "fixed":
-		return []tier{{"fixed", splitter.FixedSplit}}
+		return []tier{{"fixed", FixedSplit}}
 	default: // "heading" / "" / 未知:全 4 层
-		return []tier{{"markdown", splitter.MarkdownSplit}, {"heuristic", splitter.HeuristicSplit}, {"recursive", splitter.RecursiveSplit}, {"fixed", splitter.FixedSplit}}
+		return []tier{{"markdown", MarkdownSplit}, {"heuristic", HeuristicSplit}, {"recursive", RecursiveSplit}, {"fixed", FixedSplit}}
 	}
 }
 
-// ChildChunk 扩展 splitter.Chunk 带父索引,检索/入库层都消费 Chunk 本身。
-type ChildChunk struct {
-	splitter.Chunk
-	ParentIndex int
-}
-
+// ParentChildResult 是 SplitParentChild 的产物,parents 是入库的 parent,children 是带父索引的 child。
 type ParentChildResult struct {
-	Parents  []splitter.Chunk
+	Parents  []Chunk
 	Children []ChildChunk
 }
 
-func SplitParentChild(text string, parentCfg, childCfg splitter.SplitterConfig) ParentChildResult {
+// SplitParentChild 跑 parent 链切,再对每个 parent 跑 child 链切,返回 parents/children。
+// parent 真被切碎才入库;否则只留 child,ParentIndex = -1。
+func SplitParentChild(text string, parentCfg, childCfg SplitterConfig) ParentChildResult {
 	if text == "" {
 		return ParentChildResult{}
 	}
@@ -86,20 +81,19 @@ func SplitParentChild(text string, parentCfg, childCfg splitter.SplitterConfig) 
 	if len(parents) == 0 {
 		return ParentChildResult{}
 	}
-	var keptParents []splitter.Chunk
+	var keptParents []Chunk
 	var children []ChildChunk
 	childSeq := 0
 	for _, p := range parents {
 		parts, _, _ := SplitWithTierChain(p.Content, childCfg)
-		var subs []splitter.Chunk
+		var subs []Chunk
 		for _, sub := range parts {
 			content := strings.TrimSpace(sub.Content)
 			if content == "" {
 				continue
 			}
-			subs = append(subs, splitter.Chunk{Content: content})
+			subs = append(subs, Chunk{Content: content})
 		}
-		// parent 真被切碎才入库;否则只留 child,ParentIndex = -1。
 		parentIndex := -1
 		if len(subs) > 1 || (len(subs) == 1 && subs[0].Content != p.Content) {
 			p.Seq = len(keptParents) + 1
@@ -108,7 +102,7 @@ func SplitParentChild(text string, parentCfg, childCfg splitter.SplitterConfig) 
 		}
 		for _, sub := range subs {
 			children = append(children, ChildChunk{
-				Chunk: splitter.Chunk{
+				Chunk: Chunk{
 					Seq:           childSeq + 1,
 					Content:       sub.Content,
 					ContextHeader: mergeBreadcrumb(p.ContextHeader, sub.ContextHeader),

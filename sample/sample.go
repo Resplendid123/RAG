@@ -11,3 +11,6 @@ var InferX string
 
 //go:embed handbook.md
 var Handbook string
+
+//go:embed bluewhale.md
+var BlueWhale string

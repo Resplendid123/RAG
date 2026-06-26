@@ -3,3 +3,4 @@
 docs
 config.yaml
 CLAUDE.md
+logs/**

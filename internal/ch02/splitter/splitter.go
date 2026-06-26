@@ -13,6 +13,12 @@ type Chunk struct {
 	Seq           int
 }
 
+// ChildChunk 扩展 Chunk 带父索引,检索/入库层都消费 Chunk 本身。
+type ChildChunk struct {
+	Chunk
+	ParentIndex int
+}
+
 // SplitterConfig 是 splitter 链的配置。Strategy 留空走全 4 层链,显式指定从对应 tier 起跑。
 type SplitterConfig struct {
 	ChunkSize    int

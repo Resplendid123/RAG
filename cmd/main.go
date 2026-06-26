@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"gorm.io/gorm"
@@ -20,6 +21,7 @@ import (
 	_ "rag/internal/ch06"
 	_ "rag/internal/ch07"
 	_ "rag/internal/ch08"
+	_ "rag/internal/ch08neo4j"
 	_ "rag/internal/ch09"
 	_ "rag/internal/ch10"
 
@@ -27,6 +29,13 @@ import (
 )
 
 func main() {
+	logger, logFile, err := infrastructure.InitLogger(chapterName(os.Args))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+
 	cfg, err := infrastructure.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -57,12 +66,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	neo4jDrv, err := infrastructure.NewNeo4j(cfg.Neo4j)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if neo4jDrv != nil {
+		defer neo4jDrv.Close(context.Background())
+	}
+
 	deps := &internal.Deps{
 		DB:       gormDB,
+		Neo4j:    neo4jDrv,
 		LLM:      llm,
 		Embedder: emb,
 		Cfg:      cfg,
-		Logger:   slog.Default(),
+		Logger:   logger,
 	}
 
 	root := &cobra.Command{
@@ -70,7 +89,7 @@ func main() {
 		Short: "rag lesson runner",
 		Long:  "Run any registered lesson with `rag <lesson-name> [flags]`.",
 	}
-	root.AddCommand(migrateCmd(gormDB))
+	root.AddCommand(migrateCmd(gormDB, deps))
 	for _, l := range internal.All() {
 		root.AddCommand(lessonCmd(l, deps))
 	}
@@ -106,7 +125,7 @@ func lessonCmd(l internal.Lesson, base *internal.Deps) *cobra.Command {
 	}
 }
 
-func migrateCmd(gormDB *gorm.DB) *cobra.Command {
+func migrateCmd(gormDB *gorm.DB, deps *internal.Deps) *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
 		Use:   "migrate [lesson-name]",
@@ -133,7 +152,7 @@ func migrateCmd(gormDB *gorm.DB) *cobra.Command {
 
 			for _, l := range targets {
 				if l.Migrate == nil {
-					fmt.Printf("- %s: no Migrate func, skipping\n", l.Name)
+					slog.Info(fmt.Sprintf("- %s: no Migrate func, skipping", l.Name))
 					continue
 				}
 				schema, err := infrastructure.SchemaName(l.Name)
@@ -147,20 +166,38 @@ func migrateCmd(gormDB *gorm.DB) *cobra.Command {
 				if ctx == nil {
 					ctx = context.Background()
 				}
+				migDeps := *deps
 				err = gormDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 					if err := tx.Exec("SET LOCAL search_path TO " + schema + ", public").Error; err != nil {
 						return fmt.Errorf("set search_path: %w", err)
 					}
-					return l.Migrate(ctx, tx)
+					migDeps.DB = tx
+					return l.Migrate(ctx, migDeps)
 				})
 				if err != nil {
 					return fmt.Errorf("migrate %s: %w", l.Name, err)
 				}
-				fmt.Printf("✓ %s -> schema %s\n", l.Name, schema)
+				slog.Info(fmt.Sprintf("✓ %s -> schema %s", l.Name, schema))
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "migrate every registered lesson")
 	return cmd
+}
+
+// chapterName 从 os.Args 提取日志文件名用的 chapter 名。
+// `rag graph` → "graph";`rag migrate graph` → "graph";`rag migrate --all` → "migrate";否则 "rag"。
+func chapterName(argv []string) string {
+	if len(argv) < 2 {
+		return "rag"
+	}
+	args := argv[1:]
+	if args[0] == "migrate" {
+		if len(args) >= 2 && !strings.HasPrefix(args[1], "--") {
+			return args[1]
+		}
+		return "migrate"
+	}
+	return args[0]
 }

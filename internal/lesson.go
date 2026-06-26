@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
 	"gorm.io/gorm"
 
 	"rag/infrastructure"
@@ -11,6 +12,7 @@ import (
 
 type Deps struct {
 	DB       *gorm.DB
+	Neo4j    neo4j.Driver // 可选;nil 表示未配 Neo4j,只用 Postgres 的 chapter 不受影响。
 	LLM      infrastructure.LLM
 	Embedder infrastructure.Embedder
 	Cfg      *infrastructure.Config
@@ -20,7 +22,7 @@ type Deps struct {
 type Lesson struct {
 	Name        string
 	Description string
-	Migrate     func(ctx context.Context, db *gorm.DB) error
+	Migrate     func(ctx context.Context, deps Deps) error
 	Run         func(ctx context.Context, deps Deps, args []string) error
 }
 

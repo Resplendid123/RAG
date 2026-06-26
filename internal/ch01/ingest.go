@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/pgvector/pgvector-go"
@@ -15,14 +15,14 @@ import (
 
 // Ingest 把 doc + chunks 写入 documents / document_chunks。批 embedding,单事务。
 // 同一份 chunks 第二次写入会被 content_hash 唯一约束拦下,跳过 chunks 插入。
-func Ingest(ctx context.Context, db *gorm.DB, emb infrastructure.Embedder, doc Document, chunks []string) error {
+func Ingest(ctx context.Context, db *gorm.DB, emb infrastructure.Embedder, doc infrastructure.Document, chunks []string) error {
 	if len(chunks) == 0 {
 		return nil
 	}
 	sum := sha256.Sum256([]byte(strings.Join(chunks, "\n")))
 	hash := hex.EncodeToString(sum[:])
 
-	fmt.Printf("[EMBEDDING] → %d vectors\n", len(chunks))
+	slog.Info("embedding", "n", len(chunks))
 	vecs, err := emb.Embed(ctx, chunks)
 	if err != nil {
 		return err
@@ -39,7 +39,7 @@ func Ingest(ctx context.Context, db *gorm.DB, emb infrastructure.Embedder, doc D
 			return err
 		}
 		if docID == 0 {
-			fmt.Println("document already exists, skipping")
+			slog.Info("document already exists, skipping")
 			return nil
 		}
 		for i, c := range chunks {

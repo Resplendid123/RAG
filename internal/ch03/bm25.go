@@ -6,9 +6,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// BM25TopN 走 paradedb pg_search BM25 索引,返回 topN。
+// BM25Search 走 paradedb pg_search BM25 索引,返回 topN。
 // @@@ 是 BM25 匹配算子,paradedb.score(id) 拿 BM25 分
-func BM25TopN(ctx context.Context, db *gorm.DB, q string, topN int) ([]Hit, error) {
+func BM25Search(ctx context.Context, db *gorm.DB, q string, topN int) ([]Hit, error) {
 	if topN <= 0 {
 		topN = 3
 	}

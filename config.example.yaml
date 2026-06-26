@@ -6,6 +6,12 @@ database:
   dbname: postgres
   sslmode: disable
 
+neo4j:
+  uri: "bolt://localhost:7687"
+  username: "neo4j"
+  password: "password"
+  database: "neo4j"
+
 llm:
   provider: openai
   base_url: "https://api.minimaxi.com/v1"
@@ -18,3 +24,6 @@ embedding:
   api_key: "your_openai_api_key_here"
   model: "qwen3-embedding:0.6b"
   dimension: 1024
+
+web_search:
+    tavily_api_key:

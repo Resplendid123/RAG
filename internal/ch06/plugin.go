@@ -3,6 +3,7 @@ package ch06
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -10,7 +11,7 @@ import (
 // OnEvent 内调用 next() 让链上下一个 plugin 继续,不调用即短路。
 type Plugin interface {
 	ActivationEvents() []EventType
-	OnEvent(ctx context.Context, et EventType, cm *ChatManage, next func() error) error
+	OnEvent(ctx context.Context, et EventType, cc *ChatContext, next func() error) error
 }
 
 // EventManager 按 EventType 持有 plugin 列表,Trigger 时把列表编译成 next-call chain。
@@ -31,21 +32,21 @@ func (e *EventManager) Register(p Plugin) {
 }
 
 // Trigger 执行某个 EventType 的 chain(从 i=0 到 i=n-1),用递归闭包做 next-call。
-func (e *EventManager) Trigger(ctx context.Context, et EventType, cm *ChatManage) error {
+func (e *EventManager) Trigger(ctx context.Context, et EventType, cc *ChatContext) error {
 	plugins := e.listeners[et]
 	var run func(int) error
 	run = func(i int) error {
 		if i >= len(plugins) {
 			return nil
 		}
-		return plugins[i].OnEvent(ctx, et, cm, func() error { return run(i + 1) })
+		return plugins[i].OnEvent(ctx, et, cc, func() error { return run(i + 1) })
 	}
 	return run(0)
 }
 
-// TriggersForPreset 按 preset 顺序逐个 Trigger,打每步耗时 + 总耗时。
+// TriggerPreset 按 preset 顺序逐个 Trigger,打每步耗时 + 总耗时。
 // preset 不存在返回 error,中间任何一步出错立即返回。
-func (e *EventManager) TriggersForPreset(ctx context.Context, name string, cm *ChatManage) error {
+func (e *EventManager) TriggerPreset(ctx context.Context, name string, cc *ChatContext) error {
 	stages, ok := Pipeline[name]
 	if !ok {
 		return fmt.Errorf("unknown preset: %s", name)
@@ -53,11 +54,11 @@ func (e *EventManager) TriggersForPreset(ctx context.Context, name string, cm *C
 	total := time.Now()
 	for _, et := range stages {
 		step := time.Now()
-		if err := e.Trigger(ctx, et, cm); err != nil {
+		if err := e.Trigger(ctx, et, cc); err != nil {
 			return fmt.Errorf("event %s: %w", et, err)
 		}
-		fmt.Printf("[PLUGIN] %-22s %s\n", et, time.Since(step).Round(time.Millisecond))
+		slog.Info(fmt.Sprintf("[PLUGIN] %-22s %s\n", et, time.Since(step).Round(time.Millisecond)))
 	}
-	fmt.Printf("[TOTAL]  %s\n", time.Since(total).Round(time.Millisecond))
+	slog.Info(fmt.Sprintf("[TOTAL]  %s\n", time.Since(total).Round(time.Millisecond)))
 	return nil
 }

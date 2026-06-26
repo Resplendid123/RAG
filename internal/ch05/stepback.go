@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"rag/infrastructure"
+	"rag/internal/ragcore"
 )
 
 const stepBackPrompt = `把以下具体问题抽象成一个更通用、更利于检索的上层问题。
@@ -30,7 +31,7 @@ func StepBack(ctx context.Context, llm infrastructure.LLM, q string) (string, er
 	if err != nil {
 		return q, err
 	}
-	out = cleanAnswer(out)
+	out = ragcore.StripThink(out)
 	if out == "" {
 		return q, nil
 	}

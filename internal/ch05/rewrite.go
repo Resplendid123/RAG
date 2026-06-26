@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"rag/infrastructure"
+	"rag/internal/ragcore"
 )
 
 const rewritePrompt = `你是检索查询改写器。规则:
@@ -27,7 +28,7 @@ func RewriteQuery(ctx context.Context, llm infrastructure.LLM, q string, history
 	if err != nil {
 		return q, err
 	}
-	out = cleanAnswer(out)
+	out = ragcore.StripThink(out)
 	if out == "" {
 		return q, nil
 	}
@@ -50,7 +51,7 @@ func MultiQueryVariants(ctx context.Context, llm infrastructure.LLM, q string, n
 	if err != nil {
 		return []string{q}
 	}
-	variants := parseVariants(stripThink(out))
+	variants := parseVariants(ragcore.StripThink(out))
 	if len(variants) == 0 {
 		return []string{q}
 	}
@@ -68,7 +69,7 @@ var (
 func parseVariants(s string) []string {
 	s = fenceRE.ReplaceAllString(s, "")
 	var out []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		line = leadingPrefixRE.ReplaceAllString(line, "")
 		line = strings.TrimSpace(line)
 		if line == "" {
