@@ -7,9 +7,13 @@ import (
 	"strings"
 
 	"github.com/neo4j/neo4j-go-driver/v6/neo4j"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 
 	"rag/infrastructure"
+	"rag/internal/ch02/splitter"
 	"rag/internal/ch03"
 	"rag/internal/ragcore"
 )
@@ -86,11 +90,39 @@ type relRec struct {
 }
 
 // LocalSearch:Postgres dense 召回 top-K chunks → Neo4j 1 跳邻居(沿 MENTIONS→Entity→RELATES→Entity) → 回 Postgres 拿 chunk 文本。
+// L10 起在 retrieve / kg_expand / llm_answer 三个 OTel span,带 hits / seeds / tokens 等 attribute,
+// 不接 tracer 时 span 是 no-op,不影响 L8 调用。
 func LocalSearch(ctx context.Context, db *gorm.DB, drv neo4j.Driver, emb infrastructure.Embedder, llm infrastructure.LLM, q string) (string, error) {
-	hits, err := ch03.DenseSearch(ctx, db, emb, q, localTopK)
+	tr := infrastructure.Tracer()
+	ctx, rootSpan := tr.Start(ctx, "local_search", trace.WithAttributes(
+		attribute.String("query", q),
+		attribute.String("variant", "l8neo4j_local"),
+	))
+	defer rootSpan.End()
+
+	// 1) retrieve: dense top-K
+	var hits []ch03.Hit
+	err := func() error {
+		ctx, span := tr.Start(ctx, "retrieve", trace.WithAttributes(
+			attribute.String("query", q),
+			attribute.Int("top_k", localTopK),
+		))
+		defer span.End()
+		var e error
+		hits, e = ch03.DenseSearch(ctx, db, emb, q, localTopK)
+		if e != nil {
+			span.RecordError(e)
+			span.SetStatus(codes.Error, "dense search failed")
+			return e
+		}
+		span.SetAttributes(attribute.Int("hits", len(hits)))
+		return nil
+	}()
 	if err != nil {
+		rootSpan.RecordError(err)
 		return "", fmt.Errorf("local dense: %w", err)
 	}
+
 	chunkIDs := make([]int64, len(hits))
 	for i, h := range hits {
 		chunkIDs[i] = h.ChunkID
@@ -99,17 +131,44 @@ func LocalSearch(ctx context.Context, db *gorm.DB, drv neo4j.Driver, emb infrast
 	session := drv.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "neo4j", AccessMode: neo4j.AccessModeRead})
 	defer session.Close(ctx)
 
-	seeds, allEnts, rels, chunkIDsAll, err := graphLocalOneHop(ctx, session, chunkIDs)
+	// 2) kg_expand: Neo4j 1 跳 + 回 Postgres 拉 chunk 文本
+	var (
+		seeds, allEnts []entityRec
+		rels           []relRec
+		chunkIDsAll    []int64
+		chunks         []splitter.Chunk
+	)
+	err = func() error {
+		ctx, span := tr.Start(ctx, "kg_expand")
+		defer span.End()
+		var e error
+		seeds, allEnts, rels, chunkIDsAll, e = graphLocalOneHop(ctx, session, chunkIDs)
+		if e != nil {
+			span.RecordError(e)
+			span.SetStatus(codes.Error, "graph expand failed")
+			return e
+		}
+		finalHits := make([]ch03.Hit, len(chunkIDsAll))
+		for i, id := range chunkIDsAll {
+			finalHits[i] = ch03.Hit{ChunkID: id, Rank: i}
+		}
+		chunks, e = ch03.LoadChunks(ctx, db, finalHits)
+		if e != nil {
+			span.RecordError(e)
+			span.SetStatus(codes.Error, "load chunks failed")
+			return fmt.Errorf("local load chunks: %w", e)
+		}
+		span.SetAttributes(
+			attribute.Int("seeds", len(seeds)),
+			attribute.Int("neighbors", len(allEnts)-len(seeds)),
+			attribute.Int("relations", len(rels)),
+			attribute.Int("chunks", len(chunks)),
+		)
+		return nil
+	}()
 	if err != nil {
+		rootSpan.RecordError(err)
 		return "", err
-	}
-	finalHits := make([]ch03.Hit, len(chunkIDsAll))
-	for i, id := range chunkIDsAll {
-		finalHits[i] = ch03.Hit{ChunkID: id, Rank: i}
-	}
-	chunks, err := ch03.LoadChunks(ctx, db, finalHits)
-	if err != nil {
-		return "", fmt.Errorf("local load chunks: %w", err)
 	}
 	slog.Info(fmt.Sprintf("            seeds=%d, neighbors=%d, chunks=%d, relations=%d",
 		len(seeds), len(allEnts)-len(seeds), len(chunks), len(rels)))
@@ -120,7 +179,23 @@ func LocalSearch(ctx context.Context, db *gorm.DB, drv neo4j.Driver, emb infrast
 		ragcore.FormatNumbered(chunks),
 		q,
 	)
-	return llm.Complete(ctx, prompt)
+
+	// 3) llm_answer
+	ctx, llmSpan := tr.Start(ctx, "llm_answer", trace.WithAttributes(
+		attribute.Int("prompt_chars", len(prompt)),
+		attribute.Int("entities_count", len(allEnts)),
+		attribute.Int("chunks_count", len(chunks)),
+	))
+	defer llmSpan.End()
+	out, err := llm.Complete(ctx, prompt)
+	if err != nil {
+		llmSpan.RecordError(err)
+		llmSpan.SetStatus(codes.Error, "llm complete failed")
+		rootSpan.RecordError(err)
+		return "", err
+	}
+	llmSpan.SetAttributes(attribute.Int("response_chars", len(out)))
+	return out, nil
 }
 
 // graphLocalOneHop 在一个 ExecuteRead 事务里跑 3 段单跳 Cypher,返回 seed / all-ents / rels / chunk-ids。
